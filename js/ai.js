@@ -8,17 +8,17 @@
     this.team = team;
     this.press = false;
     this.nextThink = 0;
-    this.queueThrow = false;
     this.mistake = opts.mistake != null ? opts.mistake : 0.1;
     this.reaction = opts.reaction != null ? opts.reaction : 5;
   }
 
   Cpu.prototype.update = function (sim) {
+    if (sim !== this.sim) { this.sim = sim; this.nextThink = 0; this.press = false; } // new round
     if (sim.t < this.nextThink) return this.press;
     this.nextThink = sim.t + this.reaction + Math.floor(Math.random() * 6);
-    const queued = this.queueThrow;
     let want = this.decide(sim);
-    if (!queued && Math.random() < this.mistake) want = !want;
+    const carrying = sim.ball.holder && sim.ball.holder.team === this.team;
+    if (Math.random() < (carrying ? this.mistake * 0.4 : this.mistake)) want = !want;
     this.press = want;
     return want;
   };
@@ -32,26 +32,24 @@
     const lean = (p) => Math.sin(BR.wrap(p.torso.angle));
     const airborne = (p) => !p.onFeet && !p.lying;
 
-    if (this.queueThrow) { this.queueThrow = false; return true; }
-
+    // Holding the button carries the ball; letting go throws it.
     if (B.holder && B.holder.team === team) {
       const p = B.holder;
       const dx = attack.rimMid - p.torso.position.x, d = Math.abs(dx);
       const hand = sim.handPos(p);
       if (airborne(p)) {
-        // Dunk: hand above the rim and close -> let go of the button so the arm slams down.
-        if (d < 55 && hand.y < BR.RIM_Y - 8) return false;
-        // Shoot near the top of the jump when in range.
-        if (p.torso.velocity.y > -2.5 && d < 400 && d > 50) {
-          if (this.press) { this.queueThrow = true; this.nextThink = sim.t + 9; return false; }
-          return true;
-        }
-        return false;
+        if (!this.press) return false;
+        // Close and above the rim: hang on and carry it through for a dunk.
+        if (d < 60 && hand.y < BR.RIM_Y) return true;
+        // Shoot near the top of the jump when in range (with some sloppiness).
+        const apex = p.torso.velocity.y > -1.5 - Math.random() * 2;
+        if (apex && (d < 430 || B.holdT > 50)) return false;
+        return true;
       }
       if (p.lying) return true;
+      if (this.press) return true; // already holding: keep hopping toward the hoop
       const l = lean(p);
       if (Math.sign(l) === Math.sign(dx) && Math.abs(l) > 0.05) return true;
-      // Not leaning the right way: wait a moment, but don't freeze forever.
       return B.holdT > 90 && Math.random() < 0.3;
     }
 

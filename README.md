@@ -18,15 +18,16 @@ Matter.js is vendored in `js/`.
 - **2P** is two humans sharing one keyboard.
 - `P` pauses, `M` mutes, `Esc` goes back to the menu.
 
-Pressing the button makes **both** players on your team jump and raise their arms. Releasing
-it drops the arms. Players constantly rock back and forth, so *when* you press decides which
-way they leap.
+Holding the button makes **both** players on your team jump and raise their arms; letting go
+drops the arms. Players constantly rock back and forth, so *when* you press decides which way
+they leap.
 
-- **Catch:** touch the ball with a hand or arm and it sticks.
-- **Throw:** while holding the ball, press again. The arm swings up and the ball flies off
-  with the hand's real velocity, so aim comes from timing, lean and momentum.
-- **Dunk:** carry the ball over the rim with your arm up, then release so the arm slams down.
-- **Steal:** opponents can rip the ball away with a reaching hand or knock it loose with a body hit.
+- **Catch:** a loose ball sticks to the hand of whoever it touches (hand, arm or body).
+- **Throw:** let go of the button while holding the ball. It leaves along the player's body
+  tipped forward, plus their momentum, then flies and bounces as a normal physics ball. Aim
+  comes from timing your release to their lean and jump.
+- **Dunk:** keep holding while carrying the ball down through the rim.
+- **Steal:** touch the opponent's ball with a hand, arm or body to take it.
 
 First team to **5** wins. After every basket the court changes (street, gym, snow, beach,
 rooftop at night) and random modifiers kick in: long/short arms, tall/short players,

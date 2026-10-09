@@ -10,6 +10,8 @@
   const ctx = canvas.getContext('2d');
   ctx.imageSmoothingEnabled = false;
 
+  const STEP = 1000 / 60;
+  let acc = 0, lastT = performance.now();
   const bgCache = {};
   const bg = (court) => bgCache[court] || (bgCache[court] = R.makeBackground(court));
 
@@ -85,6 +87,29 @@
     }
   }
 
+  // ---------- Render interpolation ----------
+  // Physics runs at a fixed 60 Hz; drawing blends between the last two physics states
+  // so motion stays smooth on any refresh rate.
+  const bodiesOf = (sim) => sim.players.flatMap((p) => [p.torso, p.arm]).concat(sim.ball.body);
+  function snapshot(sim) {
+    sim._prev = bodiesOf(sim).map((b) => ({ b, x: b.position.x, y: b.position.y, a: b.angle }));
+  }
+  function withInterpolation(sim, alpha, fn) {
+    if (!sim._prev) return fn();
+    const saved = sim._prev.map((s) => {
+      const b = s.b, cur = { x: b.position.x, y: b.position.y, a: b.angle };
+      if (Math.hypot(cur.x - s.x, cur.y - s.y) < 60) {
+        b.position.x = s.x + (cur.x - s.x) * alpha;
+        b.position.y = s.y + (cur.y - s.y) * alpha;
+        b.angle = s.a + (cur.a - s.a) * alpha;
+      }
+      return cur;
+    });
+    try { fn(); } finally {
+      sim._prev.forEach((s, i) => { s.b.position.x = saved[i].x; s.b.position.y = saved[i].y; s.b.angle = saved[i].a; });
+    }
+  }
+
   function step() {
     frame++;
     for (const f of flakes) { f.y += f.v; f.x += Math.sin((frame + f.d * 40) / 40) * 0.2; if (f.y > BH) { f.y = -2; f.x = Math.random() * BW; } }
@@ -93,6 +118,7 @@
     if (state === 'splash' || state === 'menu') {
       if (!demo) newDemo();
       const sim = demo.sim;
+      snapshot(sim);
       sim.step([demo.cpus[0].update(sim), demo.cpus[1].update(sim)]);
       handleEvents(sim, false);
       demo.t++;
@@ -103,6 +129,7 @@
     if (paused) return;
     const sim = match.sim;
     const inp = state === 'play' ? [teamInput(0), teamInput(1)] : [false, false];
+    snapshot(sim);
     sim.step(inp);
     handleEvents(sim, true);
     if (match.intro > 0) match.intro--;
@@ -199,7 +226,7 @@
     F.draw(ctx, '2 PLAYERS', 310, 188, 1, '#ffffff', { align: 'center', outline: 1 });
     R.rect(ctx, 'rgba(0,0,0,0.7)', 90, 204, 300, 44);
     F.draw(ctx, 'RED TEAM: W     BLUE TEAM: ^ UP', BW / 2, 210, 1, '#ffffff', { align: 'center' });
-    F.draw(ctx, 'ONE BUTTON: JUMP + SWING ARMS', BW / 2, 222, 1, '#ffd23f', { align: 'center' });
+    F.draw(ctx, 'HOLD: JUMP + GRAB   RELEASE: THROW', BW / 2, 222, 1, '#ffd23f', { align: 'center' });
     F.draw(ctx, 'FIRST TO 5 WINS', BW / 2, 234, 1, '#5be6f7', { align: 'center' });
     F.draw(ctx, 'M: SOUND ' + (Sfx.muted ? 'OFF' : 'ON') + '   P: PAUSE   ESC: MENU', BW / 2, 258, 1, '#9fb0c4', { align: 'center', outline: 1 });
   }
@@ -261,8 +288,9 @@
   function draw() {
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     if (state === 'splash') return drawSplash();
-    if (state === 'menu') { drawWorld(demo.sim, demo.mods, frame); drawMenu(); return; }
-    drawWorld(match.sim, match.mods, frame);
+    const alpha = paused ? 1 : acc / STEP;
+    if (state === 'menu') { withInterpolation(demo.sim, alpha, () => drawWorld(demo.sim, demo.mods, frame)); drawMenu(); return; }
+    withInterpolation(match.sim, alpha, () => drawWorld(match.sim, match.mods, frame));
     drawHUD();
     if (state === 'over') drawOver();
   }
@@ -342,8 +370,6 @@
   canvas.addEventListener('touchcancel', (e) => { syncTouches(e); });
 
   // ---------- Loop ----------
-  const STEP = 1000 / 60;
-  let acc = 0, lastT = performance.now();
   function loop(now) {
     acc += Math.min(100, now - lastT);
     lastT = now;

@@ -154,7 +154,7 @@
       label: 'ball', collisionFilter: { category: CAT.BALL, mask: CAT.STATIC | CAT.BODY | CAT.ARM },
     });
     Composite.add(world, ball);
-    this.ball = { body: ball, r: bt.r, holder: null, holdT: 0, still: 0, prevY: ball.position.y };
+    this.ball = { body: ball, r: bt.r, holder: null, holdT: 0, still: 0, ignoreT: 0, stealCd: 0, prevY: ball.position.y };
 
     const onCol = (e, start) => {
       for (const pair of e.pairs) {
@@ -193,7 +193,7 @@
     Composite.add(this.engine.world, [torso, arm, joint]);
     const p = {
       team, idx, f, torso, arm, joint, h, w, armLen, armW, shoulderY, look,
-      support: 0, touching: 0, stuckT: 0, jumpCd: 0, catchCd: 0, kickCd: 0, lyingT: 0, throwT: 0, armUp: false, onFeet: true, lying: false,
+      support: 0, touching: 0, stuckT: 0, jumpCd: 0, catchCd: 0, lyingT: 0, group, armUp: false, onFeet: true, lying: false,
       phase: (idx % 2 === 0 ? 0 : 2.1) + (team === 1 ? 1.0 : 0) + (this.rng() - 0.5) * 0.6,
       swayAmp: m.swayAmp * (0.85 + this.rng() * 0.3),
       squash: 0,
@@ -235,15 +235,6 @@
       if (B.label === 'ground' && p.support === 0 && Math.abs(wrap(A.angle)) > 0.9) p.support = 2;
       if (start && B.label === 'ground' && A.velocity.y > 4) this._emit('land', { x: A.position.x, v: A.velocity.y });
     }
-    const kp = B.plugin && B.plugin.player;
-    if (A.label === 'ball' && kp && B === kp.torso && !this.ball.holder && kp.kickCd <= 0) {
-      const feet = this._feet(kp);
-      if (A.position.y > feet.y - 45 && A.velocity.y > -4) {
-        Body.setVelocity(A, { x: A.velocity.x * 0.5 + kp.torso.velocity.x * 0.6 + Math.sign(A.position.x - kp.torso.position.x) * 1.5, y: -6.5 });
-        kp.kickCd = 20;
-        this._emit('hit', { v: 4 });
-      }
-    }
     if (start && A.label === 'ball' && !this.ball.holder) {
       const v = Math.hypot(A.velocity.x, A.velocity.y);
       if (B.label === 'ground' && v > 1.5) this._emit('bounce', { v });
@@ -254,8 +245,9 @@
 
   Sim.prototype.step = function (inputs) {
     this.t++;
-    const edge = [inputs[0] && !this.prevIn[0], inputs[1] && !this.prevIn[1]];
-    for (const p of this.players) this._control(p, inputs[p.team], edge[p.team]);
+    // Letting go of the button throws the ball.
+    const released = [!inputs[0] && this.prevIn[0], !inputs[1] && this.prevIn[1]];
+    for (const p of this.players) this._control(p, inputs[p.team], released[p.team]);
     const b = this.ball.body;
     this.ball.prevY = b.position.y;
     Engine.update(this.engine, STEP_MS);
@@ -265,12 +257,11 @@
     this.prevIn = [inputs[0], inputs[1]];
   };
 
-  Sim.prototype._control = function (p, press, edge) {
+  Sim.prototype._control = function (p, press, released) {
     const T = p.torso, m = this.mods, f = p.f;
     const a = wrap(T.angle);
     if (p.jumpCd > 0) p.jumpCd--;
     if (p.catchCd > 0) p.catchCd--;
-    if (p.kickCd > 0) p.kickCd--;
     if (p.squash > 0) p.squash -= 0.08;
     p.armUp = press;
     let supported = p.support > 0;
@@ -282,7 +273,7 @@
     p.onFeet = supported && Math.abs(a) < 0.95;
     p.lying = supported && !p.onFeet;
 
-    if (edge && this.ball.holder === p && this.ball.holdT > 6) p.throwT = 1;
+    if (released && this.ball.holder === p) this._throw(p);
 
     if (p.onFeet) {
       p.lyingT = 0;
@@ -336,76 +327,87 @@
     const B = this.ball;
     B.holder = p; B.holdT = 0;
     B.body.isSensor = true;
-    p.throwT = 0;
+    B.body.collisionFilter.group = 0;
+    B.ignoreT = 0;
     this._emit('catch', { team: p.team });
+  };
+
+  // Throw: the ball leaves along the body's up axis tipped forward, so the arc depends
+  // on how the player is leaning and moving at the moment the button is let go.
+  Sim.prototype._throw = function (p) {
+    const T = p.torso, m = this.mods;
+    const aim = wrap(T.angle) + p.f * 0.75;
+    const P = 11.5 * Math.sqrt(m.gravity) * clamp(Math.sqrt(0.0012 / m.ball.density), 0.8, 1.2);
+    this._placeHeld();
+    this._release(p, true, {
+      x: Math.sin(aim) * P + T.velocity.x * 0.6,
+      y: -Math.cos(aim) * P + Math.min(0, T.velocity.y) * 0.5,
+    });
   };
 
   Sim.prototype._release = function (p, thrown, vel) {
     const B = this.ball, b = B.body;
-    let v = vel || this.handVel(p);
+    const v = vel || this.handVel(p);
     let vx = v.x, vy = v.y;
-    if (thrown && !vel) { vx *= 1.05; vy = vy * 1.05 - 1.2; }
     const sp = Math.hypot(vx, vy), cap = 19;
     if (sp > cap) { vx *= cap / sp; vy *= cap / sp; }
     B.holder = null; B.holdT = 0;
     b.isSensor = false;
+    // Briefly share the thrower's collision group so the ball can't clip their own arm/body.
+    b.collisionFilter.group = p.group;
+    B.ignoreT = 12;
     Body.setVelocity(b, { x: vx, y: vy });
-    Body.setAngularVelocity(b, -p.f * 0.25);
-    p.catchCd = thrown ? 22 : 30;
-    p.throwT = 0;
-    if (thrown) this._emit('throw', { team: p.team });
+    Body.setAngularVelocity(b, -p.f * 0.2);
+    p.catchCd = 24;
+    if (thrown) {
+      // Give the ball a moment to clear the thrower's teammate too.
+      for (const q of this.players) if (q.team === p.team && q !== p) q.catchCd = Math.max(q.catchCd, 12);
+      this._emit('throw', { team: p.team });
+    }
+  };
+
+  // Distance from the ball centre to a player's torso or arm, minus their half-widths.
+  Sim.prototype._touchGap = function (p, pos) {
+    const T = p.torso, hh = p.h / 2 - 4;
+    const s = Math.sin(T.angle), c = Math.cos(T.angle);
+    const dt = segDist(pos.x, pos.y, T.position.x + s * hh, T.position.y - c * hh, T.position.x - s * hh, T.position.y + c * hh) - p.w / 2;
+    const hp = this.handPos(p), A = p.arm, L = p.armLen / 2;
+    const sx = A.position.x + Math.sin(A.angle) * L, sy = A.position.y - Math.cos(A.angle) * L;
+    const da = segDist(pos.x, pos.y, sx, sy, hp.x, hp.y) - p.armW / 2;
+    return Math.min(dt, da);
   };
 
   Sim.prototype._postBall = function () {
     const B = this.ball, b = B.body, r = B.r;
+    if (B.stealCd > 0) B.stealCd--;
+    if (B.ignoreT > 0 && --B.ignoreT === 0) b.collisionFilter.group = 0;
     if (B.holder) {
       const p = B.holder;
       B.holdT++;
-      if (p.throwT > 0) {
-        p.throwT++;
-        // Release once the arm is swinging up hard past horizontal. Pressing while the
-        // arm is already raised gives no swing, so the ball just drops out after a moment.
-        const rel = -p.f * wrap(p.arm.angle - p.torso.angle);
-        const swing = -p.f * (p.arm.angularVelocity - p.torso.angularVelocity);
-        if ((rel > 1.0 && swing > 0.08) || p.throwT > 18) { this._release(p, true); return; }
-      }
-      // Opponents can rip the ball away with a hand, or knock it loose with their body.
-      for (const q of this.players) {
-        if (q.team === p.team || q.catchCd > 0) continue;
-        const qhv = this.handVel(q);
-        if (dist(this.handPos(q), b.position) < r + 9 && (q.armUp || Math.hypot(qhv.x - b.velocity.x, qhv.y - b.velocity.y) > 4)) {
-          p.catchCd = 36;
-          this._emit('steal', { team: q.team });
-          this._attach(q);
-          return this._placeHeld();
-        }
-        const T = q.torso, hh = q.h / 2 - 4;
-        const ax = T.position.x + Math.sin(T.angle) * hh, ay = T.position.y - Math.cos(T.angle) * hh;
-        const bx = T.position.x - Math.sin(T.angle) * hh, by = T.position.y + Math.cos(T.angle) * hh;
-        const d = segDist(b.position.x, b.position.y, ax, ay, bx, by);
-        const rv = Math.hypot(T.velocity.x - b.velocity.x, T.velocity.y - b.velocity.y);
-        if (d < r + q.w / 2 && rv > 3.5) {
-          const nx = b.position.x - T.position.x, ny = b.position.y - T.position.y, nl = Math.hypot(nx, ny) || 1;
-          this._release(p, false, { x: T.velocity.x * 0.8 + (nx / nl) * 4, y: T.velocity.y * 0.8 + (ny / nl) * 4 - 2 });
-          return;
+      // Opponents grab the ball by touching it with a hand, arm or body.
+      if (B.stealCd <= 0) {
+        for (const q of this.players) {
+          if (q.team === p.team || q.catchCd > 0) continue;
+          if (this._touchGap(q, b.position) < r + 2) {
+            p.catchCd = 30;
+            B.stealCd = 30;
+            this._emit('steal', { team: q.team });
+            this._attach(q);
+            break;
+          }
         }
       }
-      if (B.holdT > 420) { this._release(p, false); return; }
+      if (B.holdT > 600) { this._release(B.holder, false); return; }
       this._placeHeld();
     } else {
+      // A loose ball sticks to whoever it touches first.
       let best = null, bd = 1e9;
       for (const p of this.players) {
         if (p.catchCd > 0) continue;
-        const hp = this.handPos(p), A = p.arm;
-        const d = segDist(b.position.x, b.position.y, A.position.x, A.position.y, hp.x, hp.y);
-        let reach = d < r + p.armW / 2 + 8;
-        // Scoop a loose ball off the floor: the dangling hand can reach down to it.
-        if (!reach && p.onFeet && b.position.y > GROUND_Y - r - 30 && Math.abs(hp.x - b.position.x) < r + 16) reach = true;
-        if (reach && d < bd) { bd = d; best = p; }
+        const d = this._touchGap(p, b.position);
+        if (d < r + 3 && d < bd) { bd = d; best = p; }
       }
       if (best) { this._attach(best); this._placeHeld(); }
-      const sp = Math.hypot(b.velocity.x, b.velocity.y);
-      if (sp > 22) Body.setVelocity(b, { x: b.velocity.x * 22 / sp, y: b.velocity.y * 22 / sp });
     }
   };
 
@@ -435,17 +437,18 @@
   };
 
   Sim.prototype._failsafes = function () {
-    const B = this.ball, b = B.body;
+    const B = this.ball, b = B.body, r = B.r;
     if (!B.holder) {
       const sp = Math.hypot(b.velocity.x, b.velocity.y);
       B.still = sp < 0.35 ? B.still + 1 : 0;
-      if (B.still > 160) {
+      if (B.still > 120 && b.position.y < GROUND_Y - r - 4) {
         Body.setVelocity(b, { x: (W / 2 - b.position.x) * 0.012 + (this.rng() - 0.5) * 2, y: -7 });
         B.still = 0;
       }
     }
     if (!isFinite(b.position.x) || b.position.x < -40 || b.position.x > W + 40 || b.position.y > GROUND_Y + 40) {
       if (B.holder) { B.holder = null; b.isSensor = false; }
+      b.collisionFilter.group = 0;
       Body.setPosition(b, { x: W / 2, y: 100 });
       Body.setVelocity(b, { x: 0, y: 0 });
     }
